@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { TEAMS, PLAYERS, SCHEDULE, C, getTier } from './data/tournament-data';
+import { calculatePlayerStats } from './utils/tournament-utils';
 
 // ── COMPONENTS ──
 const Badge = ({ team }) => (
@@ -71,7 +72,7 @@ export default function App() {
     }
   }
 
-  function submitGameResult(gameId, winner, goalsA, goalsB) {
+  function submitGameResult(gameId, winner, goalsA, goalsB, cards = []) {
     if (!winner) {
       pop('Select a winner', C.red);
       return;
@@ -81,6 +82,7 @@ export default function App() {
       winner,
       goalsA: parseInt(goalsA) || 0,
       goalsB: parseInt(goalsB) || 0,
+      cards: cards || [],
       timestamp: new Date().toISOString()
     }]);
     pop('✓ Game logged', C.accent);
@@ -149,6 +151,7 @@ export default function App() {
               {id:"leaderboard",label:"🏆 Leaderboard"},
               {id:"schedule",label:"📅 Schedule"},
               {id:"teams",label:"👥 Teams"},
+              {id:"stats",label:"📊 Player Stats"},
             ].map(t=>(
               <button key={t.id} onClick={()=>setTab(t.id)} style={{background:"none",border:"none",cursor:"pointer",padding:"9px 12px",fontSize:12,fontWeight:tab===t.id?800:400,color:tab===t.id?C.accent:C.muted,whiteSpace:"nowrap",borderBottom:`2px solid ${tab===t.id?C.accent:"transparent"}`}}>{t.label}</button>
             ))}
@@ -284,6 +287,38 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* PLAYER STATS */}
+          {tab==="stats"&&(
+            <div>
+              <H2 color={C.accent} size={18}>Individual Player Stats</H2>
+              <Card>
+                <div style={{overflowX:"auto"}}>
+                  <table style={{width:"100%",borderCollapse:"collapse"}}>
+                    <thead><tr>
+                      <TH left>Player</TH><TH left>Team</TH><TH center>Yellow Cards</TH><TH center>Red Cards</TH>
+                    </tr></thead>
+                    <tbody>
+                      {PLAYERS.map((p,i)=>{
+                        const team = TEAMS.find(t=>t.id===p.teamId);
+                        const playerCards = results.flatMap(r=>r.cards||[]).filter(c=>c.playerId===p.id);
+                        const yellows = playerCards.filter(c=>c.type==='yellow').length;
+                        const reds = playerCards.filter(c=>c.type==='red').length;
+                        return (
+                          <tr key={p.id} style={{background:i%2===0?C.surface+"33":"transparent"}}>
+                            <TD bold>{p.name}</TD>
+                            <TD>{team?.emoji} {team?.name}</TD>
+                            <TD center>{yellows > 0 ? <span style={{color:"#fbbf24",fontWeight:700}}>{"🟨".repeat(yellows)}</span> : "-"}</TD>
+                            <TD center>{reds > 0 ? <span style={{color:C.red,fontWeight:700}}>{"🟥".repeat(reds)}</span> : "-"}</TD>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -335,7 +370,7 @@ export default function App() {
           {/* LOGGER */}
           <Card accent={C.orange+"33"}>
             <H2 color={C.orange}>Log Game Result</H2>
-            <GameLogger games={games} results={results} onSubmit={submitGameResult}/>
+            <GameLogger games={games} results={results} onSubmit={(gid,w,ga,gb,c)=>submitGameResult(gid,w,ga,gb,c)}/>
           </Card>
 
           {/* STANDINGS */}
@@ -385,17 +420,48 @@ function GameLogger({ games, results, onSubmit }) {
   const [winner, setWinner] = useState('');
   const [goalsA, setGoalsA] = useState('0');
   const [goalsB, setGoalsB] = useState('0');
+  const [cards, setCards] = useState([]);
+  const [cardPlayer, setCardPlayer] = useState('');
+  const [cardType, setCardType] = useState('yellow');
 
   const game = games.find(g=>g.id===gameId);
   const teamA = TEAMS.find(t=>t.id===game?.teamA);
   const teamB = TEAMS.find(t=>t.id===game?.teamB);
   const alreadyLogged = results.find(r=>r.gameId===gameId);
 
+  const gamePlayerIds = game ? [...(teamA?.playerIds||[]),...(teamB?.playerIds||[])] : [];
+  const gamePlayersWithTeam = gamePlayerIds.map(pid=>{
+    const p = PLAYERS.find(x=>x.id===pid);
+    const t = teamA?.playerIds.includes(pid) ? teamA : teamB;
+    return { ...p, team: t };
+  });
+
+  function addCard() {
+    if (!cardPlayer) return;
+    setCards(c=>[...c,{playerId:cardPlayer,type:cardType}]);
+    setCardPlayer('');
+    setCardType('yellow');
+  }
+
+  function removeCard(idx) {
+    setCards(c=>c.filter((_,i)=>i!==idx));
+  }
+
+  function handleSubmit() {
+    onSubmit(gameId, winner, goalsA, goalsB, cards);
+    // Reset
+    setGameId('');
+    setWinner('');
+    setGoalsA('0');
+    setGoalsB('0');
+    setCards([]);
+  }
+
   return (
     <div style={{display:"flex",flexDirection:"column",gap:12}}>
       <div>
         <div style={{fontSize:11,color:C.muted,marginBottom:5,fontWeight:700}}>SELECT GAME</div>
-        <select value={gameId} onChange={e=>setGameId(e.target.value)} style={{width:"100%",padding:"10px",borderRadius:8,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:13,outline:"none"}}>
+        <select value={gameId} onChange={e=>{setGameId(e.target.value);setCards([]);}} style={{width:"100%",padding:"10px",borderRadius:8,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:13,outline:"none"}}>
           <option value="">Choose a game...</option>
           {games.map(g=>{
             const ta=TEAMS.find(t=>t.id===g.teamA);
@@ -426,7 +492,36 @@ function GameLogger({ games, results, onSubmit }) {
             ))}
           </div>
 
-          <button onClick={()=>onSubmit(gameId, winner, goalsA, goalsB)} style={{width:"100%",padding:"12px",borderRadius:8,background:C.accent,color:"#000",fontWeight:800,border:"none",cursor:"pointer",fontSize:13}}>Submit Result ✓</button>
+          {/* Cards Section */}
+          <div style={{background:C.surface+"44",borderRadius:10,padding:10}}>
+            <div style={{fontSize:11,fontWeight:700,color:C.muted,marginBottom:8}}>CARDS (Yellow/Red)</div>
+            <div style={{display:"flex",gap:6,marginBottom:8}}>
+              <select value={cardPlayer} onChange={e=>setCardPlayer(e.target.value)} style={{flex:1,padding:"6px",borderRadius:6,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:11,outline:"none"}}>
+                <option value="">Select player...</option>
+                {gamePlayersWithTeam.map(p=><option key={p.id} value={p.id}>{p.name} ({p.team?.name})</option>)}
+              </select>
+              <select value={cardType} onChange={e=>setCardType(e.target.value)} style={{padding:"6px 10px",borderRadius:6,border:`1px solid ${C.border}`,background:C.surface,color:C.text,fontSize:11,outline:"none"}}>
+                <option value="yellow">🟨 Yellow</option>
+                <option value="red">🟥 Red</option>
+              </select>
+              <button onClick={addCard} style={{padding:"6px 12px",borderRadius:6,background:C.accent,color:"#000",fontWeight:700,border:"none",cursor:"pointer",fontSize:11}}>+</button>
+            </div>
+            {cards.length>0&&(
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {cards.map((c,i)=>{
+                  const p = PLAYERS.find(x=>x.id===c.playerId);
+                  return (
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:4,background:c.type==='yellow'?"#fbbf2455":C.red+"55",padding:"2px 8px",borderRadius:6,fontSize:10}}>
+                      <span>{p?.name} {c.type==='yellow'?'🟨':'🟥'}</span>
+                      <button onClick={()=>removeCard(i)} style={{background:"none",border:"none",cursor:"pointer",color:"inherit",fontWeight:700}}>✕</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <button onClick={handleSubmit} style={{width:"100%",padding:"12px",borderRadius:8,background:C.accent,color:"#000",fontWeight:800,border:"none",cursor:"pointer",fontSize:13}}>Submit Result ✓</button>
         </>
       )}
     </div>
