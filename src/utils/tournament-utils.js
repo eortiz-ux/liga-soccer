@@ -1,5 +1,3 @@
-import { TEAMS } from '../data/tournament-data';
-
 // Calculate individual player stats from game results
 export function calculatePlayerStats(players, results, games) {
   const stats = {};
