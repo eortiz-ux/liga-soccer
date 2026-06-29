@@ -5,15 +5,17 @@ const WEBHOOK_URL = process.env.REACT_APP_SHEETS_WEBHOOK ||
   'https://script.google.com/macros/s/AKfycbyLd5F6y1-bA_UUAgv84Ou_BZxL9qGWW29rJTzaJsR8okJqUoFp9ORF3n7NQwbX9Y9r/exec';
 
 async function postToSheets(payload) {
-  if (!WEBHOOK_URL) return;
+  if (!WEBHOOK_URL) return { ok: false };
   try {
-    await fetch(WEBHOOK_URL, {
+    const res = await fetch(WEBHOOK_URL, {
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
     });
+    return { ok: res.ok };
   } catch (e) {
     console.warn('Sheets sync failed (data saved locally):', e.message);
+    return { ok: false };
   }
 }
 
@@ -71,10 +73,17 @@ const StatBox = ({ label, value, color }) => (
   </div>
 );
 
+const inputStyle = (extra = {}) => ({
+  width: '100%', padding: '11px 13px', borderRadius: R.input,
+  border: `1.5px solid ${C.border}`, background: C.surface,
+  color: C.text, fontSize: 14, outline: 'none', boxSizing: 'border-box', ...extra
+});
+
 export default function App() {
   const [mode, setMode] = useState('player');
   const [tab, setTab] = useState('home');
   const [results, setResults] = useState([]);
+  const [registrations, setRegistrations] = useState([]);
   const [refereePIN, setRefereePIN] = useState('');
   const [authed, setAuthed] = useState(false);
   const [toasts, setToasts] = useState([]);
@@ -82,18 +91,22 @@ export default function App() {
   useEffect(() => {
     const saved = localStorage.getItem('liga_tournament');
     if (saved) {
-      try { setResults(JSON.parse(saved).results || []); } catch (_) {}
+      try {
+        const parsed = JSON.parse(saved);
+        setResults(parsed.results || []);
+        setRegistrations(parsed.registrations || []);
+      } catch (_) {}
     }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('liga_tournament', JSON.stringify({ results }));
-  }, [results]);
+    localStorage.setItem('liga_tournament', JSON.stringify({ results, registrations }));
+  }, [results, registrations]);
 
   function pop(msg, color = C.accent) {
     const id = Date.now();
     setToasts(t => [...t, { id, msg, color }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3000);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3500);
   }
 
   function login() {
@@ -108,8 +121,20 @@ export default function App() {
     const entry = { gameId, winner, goalsA: parseInt(goalsA) || 0, goalsB: parseInt(goalsB) || 0, cards, timestamp: new Date().toISOString() };
     setResults(prev => [...prev, entry]);
     const game = SCHEDULE.find(g => g.id === gameId);
-    await postToSheets({ gameId, teamAId: game?.teamA, teamBId: game?.teamB, goalsA: entry.goalsA, goalsB: entry.goalsB, winner, cards });
-    pop('Game logged' + (WEBHOOK_URL ? ' & synced' : ''), C.accent);
+    const { ok } = await postToSheets({
+      sheet: 'Results',
+      gameId, teamAId: game?.teamA, teamBId: game?.teamB,
+      goalsA: entry.goalsA, goalsB: entry.goalsB, winner, cards: JSON.stringify(cards),
+      timestamp: entry.timestamp,
+    });
+    pop(ok ? 'Game logged & synced to Sheets ✓' : 'Game saved locally (Sheets offline)', ok ? C.accent : C.orange);
+  }
+
+  async function submitRegistration(formData) {
+    const entry = { ...formData, registeredAt: new Date().toISOString(), status: 'pending' };
+    setRegistrations(prev => [...prev, entry]);
+    const { ok } = await postToSheets({ sheet: 'Registrations', ...entry });
+    return ok;
   }
 
   function getStandings() {
@@ -163,8 +188,12 @@ export default function App() {
 
   if (mode === 'player') {
     const TABS = [
-      { id: 'home', label: 'Home' }, { id: 'leaderboard', label: 'Standings' },
-      { id: 'schedule', label: 'Schedule' }, { id: 'teams', label: 'Teams' }, { id: 'stats', label: 'Player Stats' },
+      { id: 'home', label: 'Home' },
+      { id: 'leaderboard', label: 'Standings' },
+      { id: 'schedule', label: 'Schedule' },
+      { id: 'teams', label: 'Teams' },
+      { id: 'mystats', label: 'My Stats' },
+      { id: 'signup', label: 'Sign Up' },
     ];
     return (
       <div style={{ fontFamily: "'Inter','Helvetica Neue',sans-serif", background: C.bg, minHeight: '100vh', color: C.text }}>
@@ -180,7 +209,7 @@ export default function App() {
           </div>
           <div style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', overflowX: 'auto', padding: '0 16px' }}>
             {TABS.map(t => (
-              <button key={t.id} onClick={() => setTab(t.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '10px 14px', fontSize: 13, fontWeight: tab === t.id ? 700 : 400, color: tab === t.id ? C.accent : C.muted, whiteSpace: 'nowrap', borderBottom: `2px solid ${tab === t.id ? C.accent : 'transparent'}` }}>{t.label}</button>
+              <button key={t.id} onClick={() => setTab(t.id)} style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '10px 14px', fontSize: 13, fontWeight: tab === t.id ? 700 : 400, color: tab === t.id ? (t.id === 'signup' ? C.accent : C.accent) : C.muted, whiteSpace: 'nowrap', borderBottom: `2px solid ${tab === t.id ? C.accent : 'transparent'}` }}>{t.id === 'signup' ? '+ Sign Up' : t.label}</button>
             ))}
           </div>
         </div>
@@ -314,33 +343,12 @@ export default function App() {
             </div>
           )}
 
-          {tab === 'stats' && (
-            <div>
-              <div style={{ fontWeight: 800, color: C.accent, fontSize: 18, marginBottom: 14 }}>Player Stats</div>
-              <Card>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                    <thead><tr><TH left>Player</TH><TH left>Team</TH><TH>🟨 Yellows</TH><TH>🟥 Reds</TH></tr></thead>
-                    <tbody>
-                      {PLAYERS.map((p, i) => {
-                        const team = TEAMS.find(t => t.id === p.teamId);
-                        const pCards = results.flatMap(r => r.cards || []).filter(c => c.playerId === p.id);
-                        const yellows = pCards.filter(c => c.type === 'yellow').length;
-                        const reds = pCards.filter(c => c.type === 'red').length;
-                        return (
-                          <tr key={p.id} style={{ background: i % 2 === 0 ? C.surface + '44' : 'transparent' }}>
-                            <TD bold>{p.name}</TD>
-                            <TD><span style={{ color: team?.color }}>{team?.emoji}</span> {team?.name}</TD>
-                            <TD center>{yellows > 0 ? <span style={{ color: '#fbbf24', fontWeight: 700 }}>🟨 {yellows}</span> : <span style={{ color: C.muted }}>—</span>}</TD>
-                            <TD center>{reds > 0 ? <span style={{ color: C.red, fontWeight: 700 }}>🟥 {reds}</span> : <span style={{ color: C.muted }}>—</span>}</TD>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            </div>
+          {tab === 'mystats' && (
+            <MyStats results={results} />
+          )}
+
+          {tab === 'signup' && (
+            <SignUpForm onSubmit={submitRegistration} pop={pop} />
           )}
         </div>
       </div>
@@ -407,10 +415,249 @@ export default function App() {
             </div>
           </Card>
         )}
+
+        {registrations.length > 0 && (
+          <Card style={{ marginTop: 16 }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 14 }}>New Player Sign-Ups ({registrations.length})</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {registrations.slice(-20).reverse().map((r, i) => (
+                <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: C.surface, borderRadius: 8, fontSize: 13, flexWrap: 'wrap', gap: 8 }}>
+                  <div>
+                    <span style={{ fontWeight: 700 }}>{r.name}</span>
+                    <span style={{ color: C.muted, fontSize: 11, marginLeft: 8 }}>@{r.codename || '—'}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted }}>{r.email}</div>
+                  <Pill color={C.orange}>Pending</Pill>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
       </div>
     </div>
   );
 }
+
+// ─── Sign Up Form ────────────────────────────────────────────────────────────
+
+function SignUpForm({ onSubmit, pop }) {
+  const [form, setForm] = useState({ name: '', codename: '', email: '', phone: '', position: '', experience: '', teamPref: '' });
+  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!form.name || !form.email) { pop('Name and email are required', C.red); return; }
+    setLoading(true);
+    const ok = await onSubmit(form);
+    setLoading(false);
+    if (ok) {
+      setSubmitted(true);
+      pop('Registration submitted & saved to Sheets ✓', C.accent);
+    } else {
+      setSubmitted(true);
+      pop('Registration saved locally (will sync when online)', C.orange);
+    }
+  }
+
+  if (submitted) {
+    return (
+      <div style={{ maxWidth: 520, margin: '0 auto', textAlign: 'center', padding: '48px 0' }}>
+        <div style={{ fontSize: 52, marginBottom: 16 }}>✅</div>
+        <div style={{ fontSize: 22, fontWeight: 900, marginBottom: 8 }}>You're registered!</div>
+        <div style={{ fontSize: 14, color: C.muted, marginBottom: 28 }}>
+          Your info has been saved. The organizer will assign you to a team before the next session.
+        </div>
+        <Btn onClick={() => { setSubmitted(false); setForm({ name: '', codename: '', email: '', phone: '', position: '', experience: '', teamPref: '' }); }}>Register Another Player</Btn>
+      </div>
+    );
+  }
+
+  const Field = ({ label, k, type = 'text', placeholder, required }) => (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 5, letterSpacing: .5 }}>{label}{required && ' *'}</div>
+      <input type={type} value={form[k]} onChange={e => set(k, e.target.value)} placeholder={placeholder} required={required}
+        style={inputStyle()} />
+    </div>
+  );
+
+  const Select = ({ label, k, options, placeholder }) => (
+    <div>
+      <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 5, letterSpacing: .5 }}>{label}</div>
+      <select value={form[k]} onChange={e => set(k, e.target.value)} style={{ ...inputStyle(), cursor: 'pointer' }}>
+        <option value="">{placeholder}</option>
+        {options.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+
+  return (
+    <div style={{ maxWidth: 520, margin: '0 auto' }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 22, fontWeight: 900, marginBottom: 6 }}>Join the <span style={{ color: C.accent }}>Tournament</span></div>
+        <div style={{ fontSize: 13, color: C.muted }}>Fill out the form below. The organizer will place you on a team and you'll appear in the standings once your first game is logged.</div>
+      </div>
+      <Card>
+        <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <Field label="FULL NAME" k="name" placeholder="Your real name" required />
+          <Field label="CODENAME / GAMERTAG" k="codename" placeholder="e.g. Alpha, El Toro, Ghost..." />
+          <Field label="EMAIL" k="email" type="email" placeholder="your@email.com" required />
+          <Field label="PHONE (OPTIONAL)" k="phone" type="tel" placeholder="+1 (555) 000-0000" />
+          <Select label="PREFERRED POSITION" k="position" placeholder="Select position..."
+            options={['Goalkeeper', 'Defender', 'Midfielder', 'Forward', 'Flexible']} />
+          <Select label="EXPERIENCE LEVEL" k="experience" placeholder="Select level..."
+            options={['Beginner', 'Intermediate', 'Advanced', 'Semi-Pro']} />
+          <Field label="TEAM PREFERENCE (OPTIONAL)" k="teamPref" placeholder="Any team you'd like to join?" />
+          <div style={{ paddingTop: 4 }}>
+            <button type="submit" disabled={loading} style={{ width: '100%', padding: '13px', borderRadius: 10, background: C.accent, color: '#000', fontWeight: 900, border: 'none', cursor: loading ? 'not-allowed' : 'pointer', fontSize: 14, opacity: loading ? 0.7 : 1 }}>
+              {loading ? 'Submitting...' : 'Register for Tournament →'}
+            </button>
+          </div>
+        </form>
+      </Card>
+    </div>
+  );
+}
+
+// ─── My Stats Lookup ─────────────────────────────────────────────────────────
+
+function MyStats({ results }) {
+  const [query, setQuery] = useState('');
+  const [searched, setSearched] = useState(false);
+
+  const queryLower = query.toLowerCase().trim();
+
+  const matchedPlayer = queryLower.length > 1
+    ? PLAYERS.find(p => p.name.toLowerCase().includes(queryLower) || (p.codeName || '').toLowerCase().includes(queryLower))
+    : null;
+
+  const matchedTeam = matchedPlayer ? TEAMS.find(t => t.id === matchedPlayer.teamId) : null;
+
+  const playerCards = matchedPlayer
+    ? results.flatMap(r => r.cards || []).filter(c => c.playerId === matchedPlayer.id)
+    : [];
+
+  const gamesPlayed = matchedPlayer
+    ? results.filter(r => {
+        const game = matchedPlayer && r.gameId;
+        const sched = game ? require('./data/tournament-data').SCHEDULE.find(g => g.id === r.gameId) : null;
+        return sched && matchedTeam && (sched.teamA === matchedTeam.id || sched.teamB === matchedTeam.id);
+      })
+    : [];
+
+  const wins = gamesPlayed.filter(r => r.winner === matchedTeam?.id).length;
+  const losses = gamesPlayed.length - wins;
+
+  return (
+    <div style={{ maxWidth: 560, margin: '0 auto' }}>
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 22, fontWeight: 900, marginBottom: 6 }}>My <span style={{ color: C.accent }}>Stats</span></div>
+        <div style={{ fontSize: 13, color: C.muted }}>Search by your name or codename to see your tournament stats.</div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+        <input
+          value={query}
+          onChange={e => { setQuery(e.target.value); setSearched(false); }}
+          onKeyDown={e => e.key === 'Enter' && setSearched(true)}
+          placeholder="Type your name or codename..."
+          style={{ ...inputStyle(), flex: 1 }}
+        />
+        <button onClick={() => setSearched(true)} style={{ padding: '11px 20px', borderRadius: R.input, background: C.accent, color: '#000', fontWeight: 800, border: 'none', cursor: 'pointer', fontSize: 14, whiteSpace: 'nowrap' }}>
+          Search
+        </button>
+      </div>
+
+      {searched && !matchedPlayer && queryLower.length > 1 && (
+        <Card>
+          <div style={{ textAlign: 'center', padding: '20px 0' }}>
+            <div style={{ fontSize: 32, marginBottom: 10 }}>🔍</div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Player not found</div>
+            <div style={{ fontSize: 13, color: C.muted }}>Try searching by your full name or codename. If you're new, use the <strong>Sign Up</strong> tab to register.</div>
+          </div>
+        </Card>
+      )}
+
+      {matchedPlayer && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          <Card accent={matchedTeam?.color + '44'}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
+              <div style={{ width: 52, height: 52, borderRadius: '50%', background: matchedTeam?.color + '33', border: `2px solid ${matchedTeam?.color}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22 }}>
+                {matchedTeam?.emoji}
+              </div>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 900 }}>{matchedPlayer.name}</div>
+                {matchedPlayer.codeName && <div style={{ fontSize: 13, color: C.muted }}>@{matchedPlayer.codeName}</div>}
+                <div style={{ fontSize: 12, color: matchedTeam?.color, fontWeight: 700, marginTop: 2 }}>{matchedTeam?.name}</div>
+              </div>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10 }}>
+              <div style={{ background: C.surface, borderRadius: 10, padding: '12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 900, color: C.accent }}>{gamesPlayed.length}</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Games</div>
+              </div>
+              <div style={{ background: C.surface, borderRadius: 10, padding: '12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 900, color: C.accent }}>{wins}</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Wins</div>
+              </div>
+              <div style={{ background: C.surface, borderRadius: 10, padding: '12px', textAlign: 'center' }}>
+                <div style={{ fontSize: 24, fontWeight: 900, color: C.red }}>{losses}</div>
+                <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>Losses</div>
+              </div>
+            </div>
+          </Card>
+
+          <Card>
+            <div style={{ fontWeight: 700, marginBottom: 12 }}>Disciplinary Record</div>
+            <div style={{ display: 'flex', gap: 12 }}>
+              <div style={{ flex: 1, background: '#fbbf2411', border: '1px solid #fbbf2444', borderRadius: 10, padding: '14px', textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 900, color: '#fbbf24' }}>{playerCards.filter(c => c.type === 'yellow').length}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>🟨 Yellow Cards</div>
+              </div>
+              <div style={{ flex: 1, background: C.red + '11', border: `1px solid ${C.red}44`, borderRadius: 10, padding: '14px', textAlign: 'center' }}>
+                <div style={{ fontSize: 28, fontWeight: 900, color: C.red }}>{playerCards.filter(c => c.type === 'red').length}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>🟥 Red Cards</div>
+              </div>
+            </div>
+          </Card>
+
+          {gamesPlayed.length > 0 && (
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 12 }}>Game History</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {gamesPlayed.map((r, i) => {
+                  const sched = require('./data/tournament-data').SCHEDULE.find(g => g.id === r.gameId);
+                  const tA = TEAMS.find(t => t.id === sched?.teamA);
+                  const tB = TEAMS.find(t => t.id === sched?.teamB);
+                  const won = r.winner === matchedTeam?.id;
+                  return (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 12px', background: won ? C.accent + '11' : C.red + '11', borderRadius: 8, fontSize: 13 }}>
+                      <span style={{ color: C.muted, fontSize: 11 }}>{sched?.date}</span>
+                      <span style={{ fontWeight: 600 }}>{tA?.emoji} {tA?.name} vs {tB?.emoji} {tB?.name}</span>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ fontWeight: 900 }}>{r.goalsA} – {r.goalsB}</span>
+                        <Pill color={won ? C.accent : C.red}>{won ? 'W' : 'L'}</Pill>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {gamesPlayed.length === 0 && (
+            <div style={{ fontSize: 13, color: C.muted, textAlign: 'center', padding: '8px 0' }}>No games logged yet for this player's team.</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Game Logger (Referee) ───────────────────────────────────────────────────
 
 function GameLogger({ games, results, onSubmit }) {
   const [gameId, setGameId] = useState('');
@@ -434,13 +681,13 @@ function GameLogger({ games, results, onSubmit }) {
     setGameId(''); setWinner(''); setGoalsA('0'); setGoalsB('0'); setCards([]);
   }
 
-  const inputStyle = { width: '100%', padding: '10px 12px', borderRadius: R.input, border: `1.5px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, outline: 'none', boxSizing: 'border-box' };
+  const is = { width: '100%', padding: '10px 12px', borderRadius: R.input, border: `1.5px solid ${C.border}`, background: C.surface, color: C.text, fontSize: 14, outline: 'none', boxSizing: 'border-box' };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       <div>
         <div style={{ fontSize: 11, color: C.muted, fontWeight: 700, marginBottom: 5, letterSpacing: .5 }}>SELECT GAME</div>
-        <select value={gameId} onChange={e => { setGameId(e.target.value); setCards([]); setWinner(''); }} style={{ ...inputStyle, cursor: 'pointer' }}>
+        <select value={gameId} onChange={e => { setGameId(e.target.value); setCards([]); setWinner(''); }} style={{ ...is, cursor: 'pointer' }}>
           <option value="">Choose a matchup...</option>
           {games.map(g => {
             const tA = TEAMS.find(t => t.id === g.teamA);
@@ -475,12 +722,12 @@ function GameLogger({ games, results, onSubmit }) {
             <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
               <div style={{ flex: 1, textAlign: 'center' }}>
                 <div style={{ fontSize: 11, color: teamA?.color, fontWeight: 700, marginBottom: 4 }}>{teamA?.name}</div>
-                <input type="number" min="0" value={goalsA} onChange={e => setGoalsA(e.target.value)} style={{ ...inputStyle, textAlign: 'center', fontSize: 24, fontWeight: 900 }} />
+                <input type="number" min="0" value={goalsA} onChange={e => setGoalsA(e.target.value)} style={{ ...is, textAlign: 'center', fontSize: 24, fontWeight: 900 }} />
               </div>
               <div style={{ color: C.muted, fontWeight: 900, fontSize: 20, paddingTop: 20 }}>–</div>
               <div style={{ flex: 1, textAlign: 'center' }}>
                 <div style={{ fontSize: 11, color: teamB?.color, fontWeight: 700, marginBottom: 4 }}>{teamB?.name}</div>
-                <input type="number" min="0" value={goalsB} onChange={e => setGoalsB(e.target.value)} style={{ ...inputStyle, textAlign: 'center', fontSize: 24, fontWeight: 900 }} />
+                <input type="number" min="0" value={goalsB} onChange={e => setGoalsB(e.target.value)} style={{ ...is, textAlign: 'center', fontSize: 24, fontWeight: 900 }} />
               </div>
             </div>
           </div>
@@ -488,11 +735,11 @@ function GameLogger({ games, results, onSubmit }) {
           <div style={{ background: C.surface + '88', border: `1px solid ${C.border}44`, borderRadius: 10, padding: 12 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginBottom: 10, letterSpacing: .5 }}>CARDS (OPTIONAL)</div>
             <div style={{ display: 'flex', gap: 6, marginBottom: 8 }}>
-              <select value={cardPlayer} onChange={e => setCardPlayer(e.target.value)} style={{ ...inputStyle, flex: 1, fontSize: 12, padding: '8px 10px', cursor: 'pointer' }}>
+              <select value={cardPlayer} onChange={e => setCardPlayer(e.target.value)} style={{ ...is, flex: 1, fontSize: 12, padding: '8px 10px', cursor: 'pointer' }}>
                 <option value="">Select player...</option>
                 {gamePlayers.map(p => <option key={p.id} value={p.id}>{p.name} · {p.team?.name}</option>)}
               </select>
-              <select value={cardType} onChange={e => setCardType(e.target.value)} style={{ ...inputStyle, width: 'auto', fontSize: 12, padding: '8px 10px', cursor: 'pointer' }}>
+              <select value={cardType} onChange={e => setCardType(e.target.value)} style={{ ...is, width: 'auto', fontSize: 12, padding: '8px 10px', cursor: 'pointer' }}>
                 <option value="yellow">🟨 Yellow</option>
                 <option value="red">🟥 Red</option>
               </select>
