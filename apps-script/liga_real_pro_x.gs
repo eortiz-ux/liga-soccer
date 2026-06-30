@@ -436,7 +436,7 @@ function draftPoolsEngine(excludeLivePlayers) {
       draftPool.sort((a, b) => b.mmr - a.mmr);
       var localTeamsCount = pairsPossible * 2;
       var localTeams = Array.from({ length: localTeamsCount }, (_, idx) => ({
-        name: div + " Team " + (idx + 1),
+        name: div + " Team " + (idx + 1) + " (Demo)",
         division: div,
         players: []
       }));
