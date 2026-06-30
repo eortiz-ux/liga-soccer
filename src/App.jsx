@@ -5,7 +5,7 @@ import { TEAMS, PLAYERS, SCHEDULE, C } from './data/tournament-data';
 const WEBHOOK_URL = process.env.REACT_APP_SHEETS_WEBHOOK ||
   'https://script.google.com/macros/s/AKfycbyLd5F6y1-bA_UUAgv84Ou_BZxL9qGWW29rJTzaJsR8okJqUoFp9ORF3n7NQwbX9Y9r/exec';
 
-const REFEREE_PIN = '1234';
+const REFEREE_PIN = '1245';
 
 const TIERS = [
   { name: 'DIAMOND', min: 1600, color: '#a78bfa', emoji: '💎' },
